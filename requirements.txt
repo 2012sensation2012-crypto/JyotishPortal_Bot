@@ -1,0 +1,7 @@
+python-telegram-bot>=21.0,<22.0
+pyswisseph
+geopy
+requests
+timezonefinder
+astral
+pytz

@@ -1,8 +1,0 @@
-python-telegram-bot>=21.0,<22.0
-Flask>=2.3.0,<3.0.0
-pyswisseph
-geopy
-requests
-timezonefinder
-astral
-pytz

@@ -4,5 +4,5 @@ pyswisseph
 geopy
 requests
 timezonefinder
-astral==4.1.0
+astral
 pytz

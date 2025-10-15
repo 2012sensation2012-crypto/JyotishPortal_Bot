@@ -115,7 +115,7 @@ def get_kp_index(date):
             return 2.0
         
         date_str = date.strftime("%Y%m%d")
-        url = f"https://xras.ru/txt/kp_{region_code}_{date_str}.json"  # исправлено: убран пробел
+        url = f"https://xras.ru/txt/kp_{region_code}_{date_str}.json"  # УБРАН ПРОБЕЛ!
         
         response = requests.get(url, timeout=10)
         
@@ -297,7 +297,15 @@ RUSSIAN_CITIES = [
 
 # === ОБРАБОТЧИКИ ===
 
+async def delete_previous_message(update: Update):
+    """Вспомогательная функция для удаления сообщения пользователя."""
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.debug(f"Не удалось удалить сообщение: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     keyboard = []
     for i in range(0, min(50, len(RUSSIAN_CITIES)), 2):
         row = []
@@ -325,6 +333,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_SELECT_CITY
 
 async def select_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     user_input = update.message.text
     
     if user_input not in RUSSIAN_CITIES:
@@ -375,6 +384,7 @@ async def select_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_SELECT_TYPE
 
 async def select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     user_input = update.message.text.lower()
     portal_type = None
     
@@ -408,6 +418,7 @@ async def select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_ENTER_YEAR
 
 async def enter_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     try:
         year = int(update.message.text)
         if year < 2000:
@@ -445,6 +456,7 @@ async def enter_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_ENTER_YEAR
 
 async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     user_input = update.message.text
     
     if "Январь–Июнь" in user_input:
@@ -476,9 +488,11 @@ async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return STATE_ENTER_MONTH
 
 async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     # 🔒 Добавлена проверка целостности данных
     if not context.user_data.get('city') or context.user_data.get('portal_type') is None or not context.user_data.get('year'):
         await update.message.reply_text("❌ Произошла ошибка. Пожалуйста, начните заново с /start.")
+        context.user_data.clear()
         return ConversationHandler.END
 
     try:
@@ -507,7 +521,7 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось определить координаты города.")
             return ConversationHandler.END
         
-        await update.message.reply_text(
+        msg = await update.message.reply_text(
             f"⏳ Начинаю анализ месяца {month}.{year} для {city}...\n\n"
             "Это может занять несколько минут."
         )
@@ -525,6 +539,12 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 continue
         
+        # Удаляем сообщение "Анализ..."
+        try:
+            await msg.delete()
+        except:
+            pass
+        
         context.user_data['results'] = results
         context.user_data['current_page'] = 0
         
@@ -537,12 +557,13 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     results = context.user_data.get('results', [])
     page = context.user_data.get('current_page', 0)
     per_page = 10
     
     if not results:
-        await update.message.reply_text("❌ Порталы не найдены.")
+        await update.message.reply_text("❌ Порталы не найдены.", reply_markup=ReplyKeyboardRemove())
         return STATE_ENTER_YEAR
     
     start_idx = page * per_page
@@ -568,20 +589,24 @@ async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def next_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     context.user_data['current_page'] += 1
     await show_results(update, context)
     return STATE_SHOW_RESULTS
 
 async def prev_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     context.user_data['current_page'] -= 1
     await show_results(update, context)
     return STATE_SHOW_RESULTS
 
 async def next_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     current_month = context.user_data.get('month')
     current_year = context.user_data.get('year')
 
     if current_month is None or current_year is None:
+        context.user_data.clear()
         await update.message.reply_text(
             "❌ Произошла ошибка. Пожалуйста, начните заново с /start.",
             reply_markup=ReplyKeyboardRemove()
@@ -602,13 +627,16 @@ async def next_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_ENTER_MONTH
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
+    context.user_data.clear()
     await update.message.reply_text(
-        "❌ Операция отменена. Чтобы начать заново, отправьте /start",
+        "✅ Операция отменена. Чтобы начать заново, отправьте /start",
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
 async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     try:
         logger.info(f"Получен запрос: {update.message.text}")
         text = update.message.text.strip()
@@ -654,7 +682,6 @@ async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "США": "USA",
             "Москва": "Moscow",
             "Санкт-Петербург": "Saint Petersburg",
-            # ... (остальное можно оставить или убрать для упрощения)
         }
 
         for key, value in place_synonyms.items():
@@ -685,6 +712,7 @@ async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await delete_previous_message(update)
     await update.message.reply_text(
         "📖 <b>Как пользоваться</b>\n\n"
         "1️⃣ Отправьте <b>год</b>:\n"

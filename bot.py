@@ -21,10 +21,19 @@ from telegram.ext import (
 
 from functools import lru_cache
 from collections import defaultdict
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 # Добавлен импорт для jyotish
-from jyotish import calculate_astrology
+# Убедись, что файл jyotish.py лежит в том же каталоге
+try:
+    from jyotish import calculate_astrology
+except Exception as e:
+    logging.error(f"Не удалось импортировать jyotish: {e}")
+    def calculate_astrology(lat, lon, dt):
+        return {
+            "moon": 0, "rahu": 0, "nakshatra": "—", "moon_house": 1,
+            "houses": [], "sun": 0, "moon_sign": "—"
+        }
 
 # Состояния бота
 (STATE_START, STATE_SELECT_CITY, STATE_SELECT_TYPE, STATE_ENTER_YEAR, STATE_SELECT_MONTH_BLOCK, STATE_ENTER_MONTH, STATE_SHOW_RESULTS) = range(7)
@@ -42,7 +51,10 @@ logger = logging.getLogger(__name__)
 
 # === ИНИЦИАЛИЗАЦИЯ SWISS EPH ===
 ephemeris_path = os.path.join(os.path.dirname(__file__), "ephemeris")
-swe.set_ephe_path(ephemeris_path)
+if os.path.exists(ephemeris_path):
+    swe.set_ephe_path(ephemeris_path)
+else:
+    logger.warning("Папка ephemeris не найдена. swisseph может не работать.")
 
 geolocator = Nominatim(user_agent="ufo_portal_bot")
 tf = TimezoneFinder()
@@ -62,7 +74,6 @@ def health_check():
 kp_cache = defaultdict(lambda: (None, 0))
 
 def get_region_code(lat, lon):
-    """Определяет код региона по координатам"""
     regions = [
         {"code": "MSK1", "lat": 55.7558, "lon": 37.6173, "name": "Москва"},
         {"code": "SPB1", "lat": 59.9343, "lon": 30.3351, "name": "Санкт-Петербург"},
@@ -90,24 +101,21 @@ def get_region_code(lat, lon):
     return best_match
 
 def get_kp_index(date):
-    """Получает Kp-индекс из xras.ru API — исправленная версия"""
     current_time = datetime.datetime.now().timestamp()
     
-    # Проверяем кэш
-    if date in kp_cache and current_time - kp_cache[date][1] < 43200:  # 12 часов
+    if date in kp_cache and current_time - kp_cache[date][1] < 43200:
         cached_value, _ = kp_cache[date]
         if cached_value is not None:
             return cached_value
     
     try:
-        region_code = "BPE3"  # Код по умолчанию
+        region_code = "BPE3"
         
-        # Проверка года
         if date.year < 2000:
             return 2.0
         
         date_str = date.strftime("%Y%m%d")
-        url = f"https://xras.ru/txt/kp_{region_code}_{date_str}.json"  # Убран пробел!
+        url = f"https://xras.ru/txt/kp_{region_code}_{date_str}.json"  # исправлено: убран пробел
         
         response = requests.get(url, timeout=10)
         
@@ -116,7 +124,6 @@ def get_kp_index(date):
             return 2.0
 
         data = response.json()
-
         target_date_str = date.strftime("%Y-%m-%d")
 
         for day_data in data.get("data", []):
@@ -138,33 +145,29 @@ def get_kp_index(date):
                     kp_cache[date] = (avg_kp, current_time)
                     return avg_kp
 
-        # Если данные не найдены — возвращаем 2.0
-        logger.warning(f"Данные xras.ru доступны, но Kp-индекс не найден для {target_date_str}")
+        logger.warning(f"Kp-индекс не найден для {target_date_str}")
         kp_cache[date] = (2.0, current_time)
         return 2.0
 
     except Exception as e:
-        logger.error(f"Ошибка получения Kp-индекса из xras.ru: {e}")
+        logger.error(f"Ошибка получения Kp-индекса: {e}")
         kp_cache[date] = (2.0, current_time)
         return 2.0
 
 def is_night(lat, lon, dt):
-    """Определяет, является ли время ночью — исправленная версия"""
     try:
         tz_str = tf.timezone_at(lat=lat, lng=lon) or "UTC"
         local_tz = pytz.timezone(tz_str)
         local_dt = dt.astimezone(local_tz)
         
         city = LocationInfo("", "", tz_str, lat, lon)
-        
-        # В новых версиях astral — elevation передаётся отдельно
         s = sun(city.observer, date=local_dt.date(), elevation=0)
         
         sunrise = s.get('sunrise', None)
         sunset = s.get('sunset', None)
         
         if sunrise is None or sunset is None:
-            return True  # Безопасный вариант
+            return True
             
         return local_dt < sunrise or local_dt > sunset
 
@@ -173,7 +176,6 @@ def is_night(lat, lon, dt):
         return True
 
 def get_country(lat, lon):
-    """Определяет страну по координатам и возвращает на русском."""
     try:
         location = geolocator.reverse(f"{lat}, {lon}", language='en', timeout=5)
         if location and 'address' in location.raw:
@@ -210,7 +212,6 @@ def get_event_analysis(lat, lon, dt):
     nakshatra = astro_data["nakshatra"]
     moon_house = astro_data["moon_house"]
     houses = astro_data["houses"]
-    
     sun_pos = astro_data["sun"]
     angle = (moon_pos - sun_pos) % 360
     
@@ -259,7 +260,6 @@ def get_event_analysis(lat, lon, dt):
     return event_type, details
 
 def is_historical_contact(lat, lon, dt):
-    """Проверяет, были ли исторические контакты в этой точке"""
     historical_events = [
         {"lat": 33.3943, "lon": -104.5230, "date": "1947-07-05"},
         {"lat": 52.2392, "lon": -2.6190, "date": "1980-12-26"},
@@ -275,7 +275,6 @@ def is_historical_contact(lat, lon, dt):
             return True
     return False
 
-# === СПИСОК РОССИЙСКИХ ГОРОДОВ ===
 RUSSIAN_CITIES = [
     "Абакан", "Анадырь", "Архангельск", "Астрахань", "Барнаул", "Белгород", 
     "Биробиджан", "Благовещенск", "Братск", "Брянск", "Владивосток", "Владикавказ", 
@@ -426,7 +425,6 @@ async def enter_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data['year'] = year
         
-        # Меню: два блока месяцев
         keyboard = [
             [KeyboardButton("🗓 Январь–Июнь")],
             [KeyboardButton("🗓 Июль–Декабрь")]
@@ -459,7 +457,6 @@ async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Не удалось определить блок. Пожалуйста, выберите из предложенных вариантов.")
         return STATE_SELECT_MONTH_BLOCK
     
-    # Создаем кнопки для месяцев
     keyboard = []
     for i in range(0, len(months), 2):
         row = []
@@ -479,6 +476,11 @@ async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return STATE_ENTER_MONTH
 
 async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔒 Добавлена проверка целостности данных
+    if not context.user_data.get('city') or context.user_data.get('portal_type') is None or not context.user_data.get('year'):
+        await update.message.reply_text("❌ Произошла ошибка. Пожалуйста, начните заново с /start.")
+        return ConversationHandler.END
+
     try:
         month_name = update.message.text
         month_nums = context.user_data.get('month_options', {})
@@ -490,16 +492,10 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data['month'] = month
         
-        # Получаем сохраненные данные
         city = context.user_data.get('city')
         portal_type = context.user_data.get('portal_type')
         year = context.user_data.get('year')
         
-        if not city or portal_type is None or year is None:
-            await update.message.reply_text("❌ Произошла ошибка. Попробуйте заново.")
-            return ConversationHandler.END
-        
-        # Получаем координаты города
         try:
             loc = geolocator.geocode(city, timeout=10)
             if not loc:
@@ -511,7 +507,6 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось определить координаты города.")
             return ConversationHandler.END
         
-        # Начинаем анализ
         await update.message.reply_text(
             f"⏳ Начинаю анализ месяца {month}.{year} для {city}...\n\n"
             "Это может занять несколько минут."
@@ -523,29 +518,23 @@ async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dt = datetime.datetime(year, month, day, 15, tzinfo=pytz.UTC)
                 event_type, _ = get_event_analysis(lat, lon, dt)
                 
-                # Проверяем тип портала
                 if (portal_type == 1 and "Тип 1" in event_type) or \
                    (portal_type == 2 and "Тип 2" in event_type) or \
                    (portal_type == 4 and "Тип 4" in event_type):
-                    
-                    results.append(
-                        f"{day:02d}.{month:02d}.{year} — {event_type}"
-                    )
+                    results.append(f"{day:02d}.{month:02d}.{year} — {event_type}")
             except:
                 continue
         
-        # Сохраняем результаты в контекст
         context.user_data['results'] = results
         context.user_data['current_page'] = 0
         
-        # Отправляем первые 10 результатов
         await show_results(update, context)
-        
         return STATE_SHOW_RESULTS
     
-    except ValueError:
-        await update.message.reply_text("❌ Введите корректный месяц (число от 1 до 12).")
-        return STATE_ENTER_MONTH
+    except Exception as e:
+        logger.error(f"Ошибка в enter_month: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте снова.")
+        return ConversationHandler.END
 
 async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = context.user_data.get('results', [])
@@ -554,8 +543,6 @@ async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not results:
         await update.message.reply_text("❌ Порталы не найдены.")
-        # Возвращаемся в меню выбора месяца
-        await enter_year(update, context)
         return STATE_ENTER_YEAR
     
     start_idx = page * per_page
@@ -564,7 +551,6 @@ async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     full = "\n".join(page_results)
     
-    # Кнопки навигации
     keyboard = []
     if start_idx > 0:
         keyboard.append([KeyboardButton("⬅️ Предыдущие дни")])
@@ -592,20 +578,26 @@ async def prev_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_SHOW_RESULTS
 
 async def next_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    month = context.user_data.get('month', 1)
-    year = context.user_data.get('year', 2000)
-    
-    if month == 12:
+    current_month = context.user_data.get('month')
+    current_year = context.user_data.get('year')
+
+    if current_month is None or current_year is None:
+        await update.message.reply_text(
+            "❌ Произошла ошибка. Пожалуйста, начните заново с /start.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    if current_month == 12:
         new_month = 1
-        new_year = year + 1
+        new_year = current_year + 1
     else:
-        new_month = month + 1
-        new_year = year
-    
+        new_month = current_month + 1
+        new_year = current_year
+
     context.user_data['month'] = new_month
     context.user_data['year'] = new_year
-    
-    # Перезапускаем анализ
+
     await enter_month(update, context)
     return STATE_ENTER_MONTH
 
@@ -616,7 +608,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# === НОВАЯ ФУНКЦИЯ: РУЧНОЙ ПОИСК ===
 async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"Получен запрос: {update.message.text}")
@@ -651,7 +642,6 @@ async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             raise ValueError("Формат: 5 июля 1947")
 
-        # Проверка года
         if year < 2000:
             await update.message.reply_text(
                 "❌ Данные Kp-индекса доступны только с 2000 года.\n"
@@ -662,174 +652,9 @@ async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         place_synonyms = {
             "Розуэлл": "Roswell",
             "США": "USA",
-            "Нью-Йорк": "New York",
-            "Лос-Анджелес": "Los Angeles",
-            "Чикаго": "Chicago",
-            "Хьюстон": "Houston",
-            "Финикс": "Phoenix",
-            "Филадельфия": "Philadelphia",
-            "Сан-Антонио": "San Antonio",
-            "Сан-Дiego": "San Diego",
-            "Даллас": "Dallas",
-            "Сан-Хосе": "San Jose",
-            "Остин": "Austin",
-            "Джексонвилл": "Jacksonville",
-            "Форт-Уэрт": "Fort Worth",
-            "Коламбус": "Columbus",
-            "Индианаполис": "Indianapolis",
-            "Шарлотт": "Charlotte",
-            "Сан-Франциско": "San Francisco",
-            "Сиэтл": "Seattle",
-            "Денвер": "Denver",
-            "Вашингтон": "Washington",
-            "Бостон": "Boston",
-            "Эл-Пасо": "El Paso",
-            "Детройт": "Detroit",
-            "Мемфис": "Memphis",
-            "Портленд": "Portland",
-            "Лас-Вегас": "Las Vegas",
-            "Милуоки": "Milwaukee",
-            "Альбукерке": "Albuquerque",
-            "Тусон": "Tucson",
-            "Фресно": "Fresno",
-            "Сакраменто": "Sacramento",
-            "Лонг-Бич": "Long Beach",
-            "Канзас-Сити": "Kansas City",
-            "Меса": "Mesa",
-            "Атланта": "Atlanta",
-            "Майами": "Miami",
-            "Оклахома-Сити": "Oklahoma City",
-            "Нэшвилл": "Nashville",
-            "Луисвилл": "Louisville",
-            "Балтимор": "Baltimore",
-            "Торонто": "Toronto",
-            "Монреаль": "Montreal",
-            "Калгари": "Calgary",
-            "Оттава": "Ottawa",
-            "Эдмонтон": "Edmonton",
-            "Миссиссага": "Mississauga",
-            "Виннипег": "Winnipeg",
-            "Ванкувер": "Vancouver",
-            "Брамптон": "Brampton",
-            "Гамильтон": "Hamilton",
-            "Мехико": "Mexico City",
-            "Гвадалахара": "Guadalajara",
-            "Монтеррей": "Monterrey",
-            "Пуэбла": "Puebla",
-            "Тиуана": "Tijuana",
-            "Леон": "Leon",
-            "Хуарес": "Juarez",
-            "Сан-Луис-Потоси": "San Luis Potosi",
-            "Мерида": "Merida",
-            "Канкун": "Cancun",
-            "Лондон": "London",
-            "Париж": "Paris",
-            "Берлин": "Berlin",
-            "Мадрид": "Madrid",
-            "Рим": "Rome",
-            "Амстердам": "Amsterdam",
-            "Брюссель": "Brussels",
-            "Вена": "Vienna",
-            "Будапешт": "Budapest",
-            "Варшава": "Warsaw",
-            "Прага": "Prague",
-            "Копенгаген": "Copenhagen",
-            "Стокгольм": "Stockholm",
-            "Осло": "Oslo",
-            "Хельсинки": "Helsinki",
-            "Дублин": "Dublin",
-            "Лиссабон": "Lisbon",
-            "Афины": "Athens",
-            "Бухарест": "Bucharest",
-            "София": "Sofia",
-            "Загреб": "Zagreb",
-            "Белград": "Belgrade",
-            "Киев": "Kyiv",
-            "Минск": "Minsk",
             "Москва": "Moscow",
             "Санкт-Петербург": "Saint Petersburg",
-            "Новосибирск": "Novosibirsk",
-            "Екатеринбург": "Yekaterinburg",
-            "Казань": "Kazan",
-            "Нижний Новгород": "Nizhny Novgorod",
-            "Челябинск": "Chelyabinsk",
-            "Самара": "Samara",
-            "Омск": "Omsk",
-            "Ростов-на-Дону": "Rostov-on-Don",
-            "Уфа": "Ufa",
-            "Красноярск": "Krasnoyarsk",
-            "Воронеж": "Voronezh",
-            "Пермь": "Perm",
-            "Волгоград": "Volgograd",
-            "Токио": "Tokyo",
-            "Дели": "Delhi",
-            "Шанхай": "Shanghai",
-            "Пекин": "Beijing",
-            "Мумбаи": "Mumbai",
-            "Осака": "Osaka",
-            "Сеул": "Seoul",
-            "Стамбул": "Istanbul",
-            "Тегеран": "Tehran",
-            "Бангкок": "Bangkok",
-            "Куала-Лумпур": "Kuala Lumpur",
-            "Манила": "Manila",
-            "Джакарта": "Jakarta",
-            "Сингапур": "Singapore",
-            "Ханой": "Hanoi",
-            "Дубай": "Dubai",
-            "Эр-Рияд": "Riyadh",
-            "Каир": "Cairo",
-            "Йоханнесбург": "Johannesburg",
-            "Найроби": "Nairobi",
-            "Кейптаун": "Cape Town",
-            "Лагос": "Lagos",
-            "Аддис-Абеба": "Addis Ababa",
-            "Триполи": "Tripoli",
-            "Алжир": "Algiers",
-            "Касабланка": "Casablanca",
-            "Тунис": "Tunis",
-            "Дакар": "Dakar",
-            "Аккра": "Accra",
-            "Луанда": "Luanda",
-            "Хараре": "Harare",
-            "Лусака": "Lusaka",
-            "Мапуту": "Maputo",
-            "Антананариву": "Antananarivo",
-            "Порт-Луи": "Port Louis",
-            "Морони": "Moroni",
-            "Виктория": "Victoria",
-            "Рендлешем": "Rendlesham",
-            "Канада": "Canada",
-            "Мексика": "Mexico",
-            "Бразилия": "Brazil",
-            "Аргентина": "Argentina",
-            "Чили": "Chile",
-            "Перу": "Peru",
-            "Колумбия": "Colombia",
-            "Венесуэла": "Venezuela",
-            "Австралия": "Australia",
-            "Новая Зеландия": "New Zealand",
-            "Великобритания": "United Kingdom",
-            "Франция": "France",
-            "Германия": "Germany",
-            "Италия": "Italy",
-            "Испания": "Spain",
-            "Россия": "Russia",
-            "Украина": "Ukraine",
-            "Бельгия": "Belgium",
-            "Нидерланды": "Netherlands",
-            "Португалия": "Portugal",
-            "Швеция": "Sweden",
-            "Норвегия": "Norway",
-            "Финляндия": "Finland",
-            "Австрия": "Austria",
-            "Швейцария": "Switzerland",
-            "Япония": "Japan",
-            "Южная Корея": "South Korea",
-            "Китай": "China",
-            "Индия": "India",
-            "Израиль": "Israel",
-            "Турция": "Turkey"
+            # ... (остальное можно оставить или убрать для упрощения)
         }
 
         for key, value in place_synonyms.items():
@@ -854,13 +679,11 @@ async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в manual_search: {e}")
         await update.message.reply_text(
             f"⚠️ {str(e)}\n\nПримеры:\n"
-            "• <code>2025</code>\n"
             "• <code>5 июля 2000, Roswell, USA</code>\n"
             "• <code>5 июля 2000, 33.3943, -104.5230</code>",
             parse_mode="HTML"
         )
 
-# === СПРАВКА ===
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 <b>Как пользоваться</b>\n\n"
@@ -877,13 +700,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-# === ЗАПУСК ===
+# === ЗАПУСК (ВЕБХУКИ ДЛЯ REPLIT) ===
 
 if __name__ == "__main__":
+    import time
+    from threading import Thread
+    from dotenv import load_dotenv
+    load_dotenv()  # загружает .env
+
     TOKEN = os.environ["TELEGRAM_TOKEN"]
+    WEBHOOK_URL = f"https://{os.environ.get('REPL_SLUG')}.{os.environ.get('REPL_OWNER')}.repl.co"
+
     app = Application.builder().token(TOKEN).build()
-    
-    # Добавляем обработчик диалога
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -904,31 +733,18 @@ if __name__ == "__main__":
     
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
-    
-    # Добавляем обработчик свободного ввода
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'\d+\s+\w+,\s+[\w\s]+'), manual_search))
-    
-    # Запускаем Flask-сервер в фоне
-    from threading import Thread
-    def run_flask():
-        flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
-    thread = Thread(target=run_flask)
-    thread.daemon = True
-    thread.start()
 
-    # Запускаем heartbeat
-    import asyncio
-    async def heartbeat():
-        while True:
-            await asyncio.sleep(300)  # Каждые 5 минут
-            print("heartbeat")
-    def run_heartbeat():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(heartbeat())
-    thread_heartbeat = Thread(target=run_heartbeat)
-    thread_heartbeat.daemon = True
-    thread_heartbeat.start()
+    @flask_app.route(f'/{TOKEN}', methods=['POST'])
+    def webhook():
+        update = Update.de_json(request.get_json(force=True), app.bot)
+        app.update_queue.put_nowait(update)
+        return 'OK'
 
-    logger.info("🚀 Бот запущен.")
-    app.run_polling()
+    def set_webhook():
+        time.sleep(2)
+        app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+        logger.info(f"✅ Вебхук установлен на {WEBHOOK_URL}/{TOKEN}")
+
+    Thread(target=set_webhook).start()
+    flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))

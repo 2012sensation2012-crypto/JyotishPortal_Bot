@@ -11,10 +11,10 @@ from timezonefinder import TimezoneFinder
 import swisseph as swe
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
-    ContextTypes, 
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
     filters,
     ConversationHandler
 )
@@ -74,43 +74,43 @@ def get_region_code(lat, lon):
         {"code": "KRK1", "lat": 56.0184, "lon": 92.8679, "name": "Красноярск"},
         {"code": "VVO1", "lat": 48.4943, "lon": 135.0687, "name": "Владивосток"}
     ]
-    
+
     min_distance = float('inf')
     best_match = "MSK1"
-    
+
     for region in regions:
         d_lat = abs(region["lat"] - lat)
         d_lon = abs(region["lon"] - lon)
         distance = d_lat + d_lon
-        
+
         if distance < min_distance:
             min_distance = distance
             best_match = region["code"]
-    
+
     return best_match
 
 def get_kp_index(date):
     """Получает Kp-индекс из xras.ru API — исправленная версия"""
     current_time = datetime.datetime.now().timestamp()
-    
+
     # Проверяем кэш
     if date in kp_cache and current_time - kp_cache[date][1] < 43200:  # 12 часов
         cached_value, _ = kp_cache[date]
         if cached_value is not None:
             return cached_value
-    
+
     try:
         region_code = "BPE3"  # Код по умолчанию
-        
+
         # Проверка года
         if date.year < 2000:
             return 2.0
-        
+
         date_str = date.strftime("%Y%m%d")
         url = f"https://xras.ru/txt/kp_{region_code}_{date_str}.json"  # ← УБРАН ПРОБЕЛ!
-        
+
         response = requests.get(url, timeout=10)
-        
+
         if response.status_code != 200:
             logger.warning(f"xras.ru returned {response.status_code} for {date_str}")
             return 2.0
@@ -154,18 +154,18 @@ def is_night(lat, lon, dt):
         tz_str = tf.timezone_at(lat=lat, lng=lon) or "UTC"
         local_tz = pytz.timezone(tz_str)
         local_dt = dt.astimezone(local_tz)
-        
+
         city = LocationInfo("", "", tz_str, lat, lon)
-        
+
         # В новых версиях astral — elevation передаётся отдельно
         s = sun(city.observer, date=local_dt.date(), elevation=0)
-        
+
         sunrise = s.get('sunrise', None)
         sunset = s.get('sunset', None)
-        
+
         if sunrise is None or sunset is None:
             return True  # Безопасный вариант
-            
+
         return local_dt < sunrise or local_dt > sunset
 
     except Exception as e:
@@ -204,36 +204,36 @@ def get_country(lat, lon):
 @lru_cache(maxsize=365)
 def get_event_analysis(lat, lon, dt):
     astro_data = calculate_astrology(lat, lon, dt)
-    
+
     moon_pos = astro_data["moon"]
     rahu_pos = astro_data["rahu"]
     nakshatra = astro_data["nakshatra"]
     moon_house = astro_data["moon_house"]
     houses = astro_data["houses"]
-    
+
     sun_pos = astro_data["sun"]
     angle = (moon_pos - sun_pos) % 360
-    
+
     lon_360 = lon if lon >= 0 else 360 + lon
     rahu_diff = min(
         abs(lon_360 - rahu_pos),
         abs(lon_360 - rahu_pos + 360),
         abs(lon_360 - rahu_pos - 360)
     )
-    
+
     cond1 = rahu_diff <= 3
     in_8th = 210 <= angle <= 240
     in_12th = 330 <= angle <= 360
     in_mula = nakshatra == "Мула"
     cond2 = in_8th or in_12th or in_mula
-    cond3 = nakshatra in ["Ашвини", "Шатабхиша", "Мула", "Уттара Бхадрапада", 
-                          "Пурва Ашадха", "Уттара Ашадха", "Шравана", 
+    cond3 = nakshatra in ["Ашвини", "Шатабхиша", "Мула", "Уттара Бхадрапада",
+                          "Пурва Ашадха", "Уттара Ашадха", "Шравана",
                           "Пурва Фалгуни", "Уттара Фалгуни"]
     cond4 = 25 <= abs(lat) <= 50
     cond5 = is_night(lat, lon, dt)
     kp = get_kp_index(dt.date())
     cond6 = kp <= 5
-    
+
     if (cond1 or cond3 or cond5) and cond2 and cond4 and cond6:
         event_type = "✅ Тип 1 (Геопортал)"
     elif (in_8th or in_12th) and cond3 and cond6:
@@ -265,9 +265,9 @@ def is_historical_contact(lat, lon, dt):
         {"lat": 52.2392, "lon": -2.6190, "date": "1980-12-26"},
         {"lat": -33.9000, "lon": 18.4200, "date": "1994-01-21"}
     ]
-    
+
     event_date = dt.strftime("%Y-%m-%d")
-    
+
     for event in historical_events:
         lat_diff = abs(event["lat"] - lat)
         lon_diff = abs(event["lon"] - lon)
@@ -277,22 +277,22 @@ def is_historical_contact(lat, lon, dt):
 
 # === СПИСОК РОССИЙСКИХ ГОРОДОВ ===
 RUSSIAN_CITIES = [
-    "Абакан", "Анадырь", "Архангельск", "Астрахань", "Барнаул", "Белгород", 
-    "Биробиджан", "Благовещенск", "Братск", "Брянск", "Владивосток", "Владикавказ", 
-    "Владимир", "Волгоград", "Вологда", "Воркута", "Воронеж", "Горно-Алтайск", 
-    "Грозный", "Екатеринбург", "Иваново", "Ижевск", "Иркутск", "Йошкар-Ола", 
-    "Казань", "Калининград", "Калуга", "Кемерово", "Киров", "Кишинёв", 
-    "Комсомольск-на-Амуре", "Кострома", "Краснодар", "Красноярск", "Курган", "Курск", 
-    "Кызыл", "Ленск", "Липецк", "Магадан", "Майкоп", "Махачкала", "Мещовск", 
-    "Минеральные Воды", "Мирный (Якутия)", "Москва", "Мурманск", "Набережные Челны", 
-    "Назрань", "Нальчик", "Нерюнгри", "Нижневартовск", "Нижний Новгород", "Новгород", 
-    "Новокузнецк", "Новосибирск", "Новый Уренгой", "Норильск", "Омск", "Оренбург", 
-    "Орёл", "Пенза", "Пермь", "Петрозаводск", "Петропавловск-Камчатский", "Псков", 
-    "Ростов-на-Дону", "Рязань", "Салехард", "Самара", "Санкт-Петербург", "Саранск", 
-    "Саратов", "Севастополь", "Симферополь", "Смоленск", "Сочи", "Ставрополь", 
-    "Станция Восток", "Станция Мирный", "Сургут", "Сыктывкар", "Тамбов", "Тверь", 
-    "Тикси", "Тольятти", "Томск", "Тула", "Тюмень", "Улан-Удэ", "Ульяновск", "Уфа", 
-    "Хабаровск", "Ханты-Мансийск", "Чебоксары", "Челябинск", "Череповец", "Черкесск", 
+    "Абакан", "Анадырь", "Архангельск", "Астрахань", "Барнаул", "Белгород",
+    "Биробиджан", "Благовещенск", "Братск", "Брянск", "Владивосток", "Владикавказ",
+    "Владимир", "Волгоград", "Вологда", "Воркута", "Воронеж", "Горно-Алтайск",
+    "Грозный", "Екатеринбург", "Иваново", "Ижевск", "Иркутск", "Йошкар-Ола",
+    "Казань", "Калининград", "Калуга", "Кемерово", "Киров", "Кишинёв",
+    "Комсомольск-на-Амуре", "Кострома", "Краснодар", "Красноярск", "Курган", "Курск",
+    "Кызыл", "Ленск", "Липецк", "Магадан", "Майкоп", "Махачкала", "Мещовск",
+    "Минеральные Воды", "Мирный (Якутия)", "Москва", "Мурманск", "Набережные Челны",
+    "Назрань", "Нальчик", "Нерюнгри", "Нижневартовск", "Нижний Новгород", "Новгород",
+    "Новокузнецк", "Новосибирск", "Новый Уренгой", "Норильск", "Омск", "Оренбург",
+    "Орёл", "Пенза", "Пермь", "Петрозаводск", "Петропавловск-Камчатский", "Псков",
+    "Ростов-на-Дону", "Рязань", "Салехард", "Самара", "Санкт-Петербург", "Саранск",
+    "Саратов", "Севастополь", "Симферополь", "Смоленск", "Сочи", "Ставрополь",
+    "Станция Восток", "Станция Мирный", "Сургут", "Сыктывкар", "Тамбов", "Тверь",
+    "Тикси", "Тольятти", "Томск", "Тула", "Тюмень", "Улан-Удэ", "Ульяновск", "Уфа",
+    "Хабаровск", "Ханты-Мансийск", "Чебоксары", "Челябинск", "Череповец", "Черкесск",
     "Чита", "Элиста", "Южно-Сахалинск", "Якутск", "Ярославль"
 ]
 
@@ -306,13 +306,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if i+1 < len(RUSSIAN_CITIES):
             row.append(KeyboardButton(RUSSIAN_CITIES[i+1]))
         keyboard.append(row)
-    
+
     reply_markup = ReplyKeyboardMarkup(
-        keyboard, 
+        keyboard,
         resize_keyboard=True,
         one_time_keyboard=False
     )
-    
+
     await update.message.reply_text(
         "🌍 <b>Система анализа порталов</b>\n\n"
         "Выберите город России для анализа:\n\n"
@@ -322,12 +322,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
-    
+
     return STATE_SELECT_CITY
 
 async def select_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
-    
+
     if user_input not in RUSSIAN_CITIES:
         keyboard = []
         for i in range(0, min(50, len(RUSSIAN_CITIES)), 2):
@@ -336,32 +336,32 @@ async def select_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if i+1 < len(RUSSIAN_CITIES):
                 row.append(KeyboardButton(RUSSIAN_CITIES[i+1]))
             keyboard.append(row)
-        
+
         reply_markup = ReplyKeyboardMarkup(
-            keyboard, 
+            keyboard,
             resize_keyboard=True,
             one_time_keyboard=False
         )
-        
+
         await update.message.reply_text(
             "❌ Не удалось определить город. Пожалуйста, выберите из предложенных вариантов.",
             reply_markup=reply_markup
         )
         return STATE_SELECT_CITY
-    
+
     context.user_data['city'] = user_input
-    
+
     keyboard = [
         [KeyboardButton("Геопортал ✅"), KeyboardButton("Атмосферный 🌤")],
         [KeyboardButton("Аварийный 💥")]
     ]
-    
+
     reply_markup = ReplyKeyboardMarkup(
-        keyboard, 
+        keyboard,
         resize_keyboard=True,
         one_time_keyboard=False
     )
-    
+
     await update.message.reply_text(
         f"🔍 Выбран город: <b>{user_input}</b>\n\n"
         "Теперь выберите тип портала для поиска:\n\n"
@@ -372,13 +372,13 @@ async def select_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
-    
+
     return STATE_SELECT_TYPE
 
 async def select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.lower()
     portal_type = None
-    
+
     if "геопортал" in user_input or "1" in user_input or "✅" in user_input:
         portal_type = 1
     elif "атмосферный" in user_input or "2" in user_input or "🌤" in user_input:
@@ -397,15 +397,15 @@ async def select_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
         return STATE_SELECT_TYPE
-    
+
     context.user_data['portal_type'] = portal_type
-    
+
     await update.message.reply_text(
         "📅 Укажите год для анализа (только с 2000 года):\n\n"
         "Данные Kp-индекса доступны только с 2000 года.",
         reply_markup=ReplyKeyboardRemove()
     )
-    
+
     return STATE_ENTER_YEAR
 
 async def enter_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -417,38 +417,38 @@ async def enter_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Введите год в диапазоне 2000-2100."
             )
             return STATE_ENTER_YEAR
-        
+
         if year > 2100:
             await update.message.reply_text(
                 "❌ Некорректный год. Введите год в диапазоне 2000-2100."
             )
             return STATE_ENTER_YEAR
-        
+
         context.user_data['year'] = year
-        
+
         # Меню: два блока месяцев
         keyboard = [
             [KeyboardButton("🗓 Январь–Июнь")],
             [KeyboardButton("🗓 Июль–Декабрь")]
         ]
-        
+
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
+
         await update.message.reply_text(
             f"📅 Год {year} выбран.\n"
             "Выберите блок месяцев:",
             reply_markup=reply_markup
         )
-        
+
         return STATE_SELECT_MONTH_BLOCK
-    
+
     except ValueError:
         await update.message.reply_text("❌ Введите корректный год (например, 2025).")
         return STATE_ENTER_YEAR
 
 async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
-    
+
     if "Январь–Июнь" in user_input:
         months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь"]
         month_nums = [1, 2, 3, 4, 5, 6]
@@ -458,7 +458,7 @@ async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text("❌ Не удалось определить блок. Пожалуйста, выберите из предложенных вариантов.")
         return STATE_SELECT_MONTH_BLOCK
-    
+
     # Создаем кнопки для месяцев
     keyboard = []
     for i in range(0, len(months), 2):
@@ -467,105 +467,102 @@ async def select_month_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if i+1 < len(months):
             row.append(KeyboardButton(months[i+1]))
         keyboard.append(row)
-    
+
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
+
     await update.message.reply_text(
         "📅 Выберите месяц:",
         reply_markup=reply_markup
     )
-    
+
     context.user_data['month_options'] = dict(zip(months, month_nums))
     return STATE_ENTER_MONTH
+
+async def analyze_month(context, city, portal_type, year, month):
+    """Выносим логику анализа месяца в отдельную функцию"""
+    try:
+        loc = geolocator.geocode(city, timeout=10)
+        if not loc:
+            raise Exception("Не удалось определить координаты города.")
+        lat, lon = loc.latitude, loc.longitude
+    except Exception as e:
+        logger.error(f"Ошибка получения координат для {city}: {e}")
+        raise Exception("Не удалось определить координаты города.")
+
+    results = []
+    for day in range(1, 32):
+        try:
+            dt = datetime.datetime(year, month, day, 15, tzinfo=pytz.UTC)
+            event_type, _ = get_event_analysis(lat, lon, dt)
+
+            # Проверяем тип портала
+            if (portal_type == 1 and "Тип 1" in event_type) or \
+               (portal_type == 2 and "Тип 2" in event_type) or \
+               (portal_type == 4 and "Тип 4" in event_type):
+
+                results.append(
+                    f"{day:02d}.{month:02d}.{year} — {event_type}"
+                )
+        except Exception as e:
+            logger.debug(f"Ошибка при анализе дня {day}.{month}.{year}: {e}")
+            continue
+
+    return results
 
 async def enter_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         month_name = update.message.text
         month_nums = context.user_data.get('month_options', {})
         month = month_nums.get(month_name)
-        
+
         if month is None:
             # ← ИСПРАВЛЕНИЕ: не возвращаемся в STATE_ENTER_MONTH, а в STATE_SELECT_MONTH_BLOCK
             await select_month_block(update, context)
             return STATE_SELECT_MONTH_BLOCK
-        
+
         context.user_data['month'] = month
-        
+
         # Получаем сохраненные данные
         city = context.user_data.get('city')
         portal_type = context.user_data.get('portal_type')
         year = context.user_data.get('year')
-        
+
         if not city or portal_type is None or year is None:
             await update.message.reply_text("❌ Произошла ошибка. Попробуйте заново.")
             return ConversationHandler.END
-        
-        # Получаем координаты города
-        try:
-            loc = geolocator.geocode(city, timeout=10)
-            if not loc:
-                await update.message.reply_text("❌ Не удалось определить координаты города.")
-                return ConversationHandler.END
-            lat, lon = loc.latitude, loc.longitude
-        except Exception as e:
-            logger.error(f"Ошибка получения координат для {city}: {e}")
-            await update.message.reply_text("❌ Не удалось определить координаты города.")
-            return ConversationHandler.END
-        
+
         # Начинаем анализ
         msg = await update.message.reply_text(
             f"⏳ Начинаю анализ месяца {month}.{year} для {city}...\n\n"
             "Это может занять несколько минут."
         )
         context.user_data['last_msg_id'] = msg.message_id  # ← Сохраняем ID сообщения
-        
-        results = []
-        for day in range(1, 32):
-            try:
-                dt = datetime.datetime(year, month, day, 15, tzinfo=pytz.UTC)
-                event_type, _ = get_event_analysis(lat, lon, dt)
-                
-                # Проверяем тип портала
-                if (portal_type == 1 and "Тип 1" in event_type) or \
-                   (portal_type == 2 and "Тип 2" in event_type) or \
-                   (portal_type == 4 and "Тип 4" in event_type):
-                    
-                    results.append(
-                        f"{day:02d}.{month:02d}.{year} — {event_type}"
-                    )
-            except:
-                continue
-        
+
+        try:
+            results = await analyze_month(context, city, portal_type, year, month)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при анализе: {str(e)}")
+            return ConversationHandler.END
+
         # Сохраняем результаты в контекст
         context.user_data['results'] = results
         context.user_data['current_page'] = 0
-        
+
         # Отправляем первые 10 результатов
         await show_results(update, context)
-        
+
         return STATE_SHOW_RESULTS
-    
-    except ValueError:
-        await update.message.reply_text("❌ Введите корректный месяц (число от 1 до 12).")
-        return STATE_ENTER_MONTH
+
+    except Exception as e:
+        logger.error(f"Ошибка в enter_month: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте заново.")
+        return ConversationHandler.END
 
 async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = context.user_data.get('results', [])
     page = context.user_data.get('current_page', 0)
     per_page = 10
-    
-    if not results:
-        await update.message.reply_text("❌ Порталы не найдены.")
-        # Возвращаемся в меню выбора года
-        await enter_year(update, context)
-        return STATE_ENTER_YEAR
-    
-    start_idx = page * per_page
-    end_idx = start_idx + per_page
-    page_results = results[start_idx:end_idx]
-    
-    full = "\n".join(page_results)
-    
+
     # Удаляем предыдущее сообщение (если возможно)
     last_msg_id = context.user_data.get('last_msg_id')
     if last_msg_id:
@@ -573,25 +570,54 @@ async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_msg_id)
         except Exception as e:
             logger.info(f"Не удалось удалить сообщение {last_msg_id}: {e}")
-    
-    # Кнопки навигации
+
+    # Кнопки навигации (всегда показываем, даже если результатов нет)
     keyboard = []
-    if start_idx > 0:
-        keyboard.append([KeyboardButton("⬅️ Предыдущие дни")])
-    if end_idx < len(results):
-        keyboard.append([KeyboardButton("➡️ Следующие дни")])
-    keyboard.append([KeyboardButton("🔄 Следующий месяц")])
-    keyboard.append([KeyboardButton("🔚 Завершить")])
-    
+
+    if results:  # Только если есть результаты
+        start_idx = page * per_page
+        end_idx = start_idx + per_page
+        page_results = results[start_idx:end_idx]
+
+        full = "\n".join(page_results)
+
+        if start_idx > 0:
+            keyboard.append([KeyboardButton("⬅️ Предыдущие дни")])
+        if end_idx < len(results):
+            keyboard.append([KeyboardButton("➡️ Следующие дни")])
+
+        # Сообщение с результатами
+        text = f"📅 Результаты ({start_idx + 1}–{min(end_idx, len(results))} из {len(results)}):\n\n{full}"
+    else:
+        # Нет результатов
+        text = "❌ Порталы не найдены."
+        # Кнопки "Следующий месяц" и "Завершить" всегда доступны
+        keyboard.append([KeyboardButton("🔄 Следующий месяц")])
+        keyboard.append([KeyboardButton("🔚 Завершить")])
+
+    # Всегда добавляем кнопки "Следующий месяц" и "Завершить", если результатов нет
+    if not results:
+        # Кнопки "Следующий месяц" и "Завершить" всегда доступны
+        if not keyboard:  # Если не было кнопок "след/пред"
+            keyboard.append([KeyboardButton("🔄 Следующий месяц")])
+            keyboard.append([KeyboardButton("🔚 Завершить")])
+    else:
+        # Если есть результаты, добавляем "Следующий месяц" и "Завершить" внизу
+        keyboard.append([KeyboardButton("🔄 Следующий месяц")])
+        keyboard.append([KeyboardButton("🔚 Завершить")])
+
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
+
     # Отправляем новое сообщение
     msg = await update.message.reply_text(
-        f"📅 Результаты ({start_idx + 1}–{min(end_idx, len(results))} из {len(results)}):\n\n{full}",
+        text,
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
     context.user_data['last_msg_id'] = msg.message_id  # ← Обновляем ID
+
+    # Не меняем состояние — остаемся в STATE_SHOW_RESULTS
+    return STATE_SHOW_RESULTS
 
 async def next_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['current_page'] += 1
@@ -606,32 +632,23 @@ async def prev_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def next_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     month = context.user_data.get('month', 1)
     year = context.user_data.get('year', 2000)
-    
+
     if month == 12:
         new_month = 1
         new_year = year + 1
     else:
         new_month = month + 1
         new_year = year
-    
+
     context.user_data['month'] = new_month
     context.user_data['year'] = new_year
-    
-    # ← ИСПРАВЛЕНИЕ: не вызываем enter_month напрямую, а переходим в нужное состояние
+
     # Анализ запустится автоматически
     city = context.user_data.get('city')
     portal_type = context.user_data.get('portal_type')
-    
+
     if not city or portal_type is None:
         await update.message.reply_text("❌ Ошибка данных. Отправьте /start.")
-        return ConversationHandler.END
-
-    try:
-        loc = geolocator.geocode(city, timeout=10)
-        lat, lon = loc.latitude, loc.longitude
-    except Exception as e:
-        logger.error(f"Ошибка координат при смене месяца: {e}")
-        await update.message.reply_text("❌ Ошибка координат.")
         return ConversationHandler.END
 
     msg = await update.message.reply_text(
@@ -639,17 +656,11 @@ async def next_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data['last_msg_id'] = msg.message_id
 
-    results = []
-    for day in range(1, 32):
-        try:
-            dt = datetime.datetime(new_year, new_month, day, 15, tzinfo=pytz.UTC)
-            event_type, _ = get_event_analysis(lat, lon, dt)
-            if (portal_type == 1 and "Тип 1" in event_type) or \
-               (portal_type == 2 and "Тип 2" in event_type) or \
-               (portal_type == 4 and "Тип 4" in event_type):
-                results.append(f"{day:02d}.{new_month:02d}.{new_year} — {event_type}")
-        except:
-            continue
+    try:
+        results = await analyze_month(context, city, portal_type, new_year, new_month)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при анализе: {str(e)}")
+        return ConversationHandler.END
 
     context.user_data['results'] = results
     context.user_data['current_page'] = 0
@@ -664,7 +675,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_msg_id)
         except:
             pass
-    
+
     await update.message.reply_text(
         "❌ Операция отменена. Чтобы начать заново, отправьте /start",
         reply_markup=ReplyKeyboardRemove()
@@ -770,7 +781,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     TOKEN = os.environ["TELEGRAM_TOKEN"]
     app = Application.builder().token(TOKEN).build()
-    
+
     # Добавляем обработчик диалога
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -789,13 +800,13 @@ if __name__ == "__main__":
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-    
+
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
-    
+
     # Добавляем обработчик свободного ввода
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'\d+\s+\w+,\s+[\w\s]+'), manual_search))
-    
+
     # Запускаем Flask-сервер в фоне
     from threading import Thread
     def run_flask():

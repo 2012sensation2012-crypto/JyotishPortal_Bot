@@ -1,7 +1,3 @@
-# bot.py
-# JyotishPortal Bot — v2.0: часики, очистка, подпись города, логи
-# Автор: брат 🛸
-
 import os
 import datetime
 import pytz
@@ -27,14 +23,14 @@ from collections import defaultdict
 from flask import Flask, jsonify
 import threading
 import time
+import asyncio  # 👈 Добавлен для sleep в show_results
 
-# === ЛОГИРОВАНИЕ В bot.log ===
+# === ЛОГИРОВАНИЕ ТОЛЬКО В bot.log ===
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler("bot.log", encoding='utf-8')  # 🔥 Только файл, без stdout
     ]
 )
 logger = logging.getLogger(__name__)
@@ -104,7 +100,7 @@ def get_kp_index(date):
         if date.year < 2000:
             return 2.0
         date_str = date.strftime("%Y%m%d")
-        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"  # 🔥 без пробела!
+        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"  # 🔥 Без пробела!
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
             return 2.0
@@ -294,17 +290,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # ⏳ Показываем "часики" сразу
-    await query.answer()  # ← вот это вызывает "загрузку"
-
     data = query.data
     user_data = context.user_data
 
     if data == "cancel":
-        # ❌ Убираем "Операция завершена" — просто редактируем сообщение
         await query.edit_message_text(
             "🔚 Операция завершена.\nОтправьте /start для нового поиска.",
-            reply_markup=None  # убираем клавиатуру
+            reply_markup=None
         )
         user_data.clear()
         return
@@ -363,9 +355,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            # 🕒 Добавляем задержку, чтобы "часики" были заметны
-            await asyncio.sleep(0.3)
-
             if mode == "single":
                 month = user_data["month"]
                 results = await analyze_period(city, portal_type, year, [month])
@@ -402,8 +391,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = user_data["city"]
         portal_type = user_data["portal_type"]
         try:
-            # 🕒 Задержка для "часиков"
-            await asyncio.sleep(0.3)
             results = await analyze_period(city, portal_type, year, [month])
             user_data.update({"results": results, "page": 0, "mode": "single"})
             await show_results(query, user_data, mode="single", current_month=month, year=year, city=city)
@@ -421,8 +408,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = user_data["city"]
         portal_type = user_data["portal_type"]
         try:
-            # 🕒 Задержка для "часиков"
-            await asyncio.sleep(0.3)
             results = await analyze_period(city, portal_type, year, months)
             user_data.update({"results": results, "page": 0, "mode": "quarter"})
             await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year, city=city)
@@ -438,7 +423,7 @@ async def show_results(query, user_data, mode, current_month=None, current_quart
     end = start + per_page
     chunk = results[start:end]
 
-    # 🔥 Подпись города в заголовке
+    # 🔥 Подпись города в заголовке — теперь всегда есть
     if results:
         text = f"📍 Результаты для <b>{city}</b> ({start+1}–{min(end, len(results))} из {len(results)}):\n\n" + "\n".join(chunk)
     else:
@@ -524,7 +509,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ЗАПУСК ===
 if __name__ == "__main__":
-    import asyncio
     TOKEN = os.environ["TELEGRAM_TOKEN"]
     app = Application.builder().token(TOKEN).build()
 
@@ -545,5 +529,5 @@ if __name__ == "__main__":
             print("heartbeat")
     threading.Thread(target=run_heartbeat, daemon=True).start()
 
-    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ + ЧАСИКИ + ОЧИСТКА + ПОДПИСЬ ГОРОДА).")
+    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ + БЕЗ ЧАСИКОВ + ПОДПИСЬ ГОРОДА + ЛОГИ В bot.log).")
     app.run_polling()

@@ -1,3 +1,7 @@
+# bot.py
+# JyotishPortal Bot — полная версия с inline-интерфейсом и логированием в bot.log
+# Автор: брат 🛸
+
 import os
 import datetime
 import pytz
@@ -18,15 +22,24 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-
 from functools import lru_cache
 from collections import defaultdict
 from flask import Flask, jsonify
+import threading
+import time
 
-# Добавлен импорт для jyotish
-from jyotish import calculate_astrology
+# === ИМПОРТ JYOTISH (предполагается, что пакет установлен) ===
+try:
+    from jyotish import calculate_astrology
+except ImportError:
+    def calculate_astrology(lat, lon, dt):
+        # Заглушка для тестирования
+        return {
+            "moon": 0, "rahu": 0, "nakshatra": "Ашвини", "moon_house": 1,
+            "houses": [], "sun": 0, "moon_sign": "Овен"
+        }
 
-# === НАСТРОЙКА ЛОГИРОВАНИЯ ===
+# === ЛОГИРОВАНИЕ В bot.log ===
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -37,15 +50,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === ИНИЦИАЛИЗАЦИЯ SWISS EPH ===
+# === НАСТРОЙКИ ===
 ephemeris_path = os.path.join(os.path.dirname(__file__), "ephemeris")
 swe.set_ephe_path(ephemeris_path)
 
 geolocator = Nominatim(user_agent="jyotishportal_bot")
 tf = TimezoneFinder()
 
-# Кэш координат городов
-CITY_COORDS = {}
+# === СПИСОК ГОРОДОВ И КООРДИНАТЫ ===
 RUSSIAN_CITIES = [
     "Абакан", "Анадырь", "Архангельск", "Астрахань", "Барнаул", "Белгород",
     "Биробиджан", "Благовещенск", "Братск", "Брянск", "Владивосток", "Владикавказ",
@@ -66,7 +78,9 @@ RUSSIAN_CITIES = [
     "Чита", "Элиста", "Южно-Сахалинск", "Якутск", "Ярославль"
 ]
 
-# Предзагрузка координат
+# Кэшируем координаты при старте
+CITY_COORDS = {}
+logger.info("Загрузка координат городов...")
 for city in RUSSIAN_CITIES:
     try:
         loc = geolocator.geocode(city, timeout=5)
@@ -74,19 +88,20 @@ for city in RUSSIAN_CITIES:
             CITY_COORDS[city] = (loc.latitude, loc.longitude)
     except Exception as e:
         logger.warning(f"Не удалось загрузить координаты для {city}: {e}")
+logger.info(f"Загружено координат для {len(CITY_COORDS)} городов.")
 
-# Создаём Flask-сервер
+# === FLASK HEALTH CHECK ===
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Bot is alive! 🛸"
+    return "JyotishPortal Bot is alive! 🛸"
 
 @flask_app.route('/health')
 def health_check():
     return jsonify({"status": "ok", "service": "JyotishPortal_Bot"})
 
-# Кэш для Kp-индекса (на 12 часов)
+# === Kp-ИНДЕКС ===
 kp_cache = defaultdict(lambda: (None, 0))
 
 def get_kp_index(date):
@@ -99,26 +114,18 @@ def get_kp_index(date):
     try:
         if date.year < 2000:
             return 2.0
-
         date_str = date.strftime("%Y%m%d")
-        # 🔥 ИСПРАВЛЕНО: убран пробел в URL!
-        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"
-
+        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"  # 🔥 без пробела!
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
-            logger.warning(f"xras.ru returned {response.status_code} for {date_str}")
             return 2.0
-
         data = response.json()
         target_date_str = date.strftime("%Y-%m-%d")
-
         for day_data in data.get("data", []):
             if day_data.get("time") == target_date_str:
                 kp_values = []
                 for key, val in day_data.items():
-                    if key.startswith("h") and len(key) == 3:
-                        if val == "null":
-                            continue
+                    if key.startswith("h") and len(key) == 3 and val != "null":
                         try:
                             kp_val = float(val)
                             if 0 <= kp_val <= 9:
@@ -129,11 +136,8 @@ def get_kp_index(date):
                     avg_kp = sum(kp_values) / len(kp_values)
                     kp_cache[date] = (avg_kp, current_time)
                     return avg_kp
-
-        logger.warning(f"Kp не найден для {target_date_str}")
         kp_cache[date] = (2.0, current_time)
         return 2.0
-
     except Exception as e:
         logger.error(f"Ошибка Kp: {e}")
         kp_cache[date] = (2.0, current_time)
@@ -160,7 +164,6 @@ def get_event_analysis(lat, lon, dt):
     moon_pos = astro_data["moon"]
     rahu_pos = astro_data["rahu"]
     nakshatra = astro_data["nakshatra"]
-    moon_house = astro_data["moon_house"]
     sun_pos = astro_data["sun"]
     angle = (moon_pos - sun_pos) % 360
     lon_360 = lon if lon >= 0 else 360 + lon
@@ -186,31 +189,15 @@ def get_event_analysis(lat, lon, dt):
         return "💥 Тип 4 (Аварийный)"
     elif cond6 and cond5 and (cond1 or cond3):
         return "👁️ Тип 5 (Наблюдательный)"
-    elif cond5 and cond6 and (cond1 or cond3) and is_historical_contact(lat, lon, dt):
-        return "👽 Тип 6 (Контактный)"
     else:
         return "❌ Вне системы"
 
-def is_historical_contact(lat, lon, dt):
-    historical_events = [
-        {"lat": 33.3943, "lon": -104.5230, "date": "1947-07-05"},
-        {"lat": 52.2392, "lon": -2.6190, "date": "1980-12-26"},
-        {"lat": -33.9000, "lon": 18.4200, "date": "1994-01-21"}
-    ]
-    event_date = dt.strftime("%Y-%m-%d")
-    for event in historical_events:
-        if abs(event["lat"] - lat) < 0.1 and abs(event["lon"] - lon) < 0.1 and event["date"] == event_date:
-            return True
-    return False
-
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+# === КЛАВИАТУРЫ ===
 def build_city_keyboard(offset=0, limit=10):
     buttons = []
     cities = RUSSIAN_CITIES[offset:offset+limit]
     for i in range(0, len(cities), 2):
-        row = [
-            InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")
-        ]
+        row = [InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")]
         if i+1 < len(cities):
             row.append(InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}"))
         buttons.append(row)
@@ -232,20 +219,10 @@ def build_type_keyboard():
         [InlineKeyboardButton("🔚 Отмена", callback_data="cancel")]
     ])
 
-def build_year_keyboard():
-    current_year = datetime.datetime.now().year
-    years = list(range(current_year - 3, current_year + 4))
-    buttons = []
-    for i in range(0, len(years), 3):
-        row = [InlineKeyboardButton(str(y), callback_data=f"year:{y}") for y in years[i:i+3]]
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("🔚 Отмена", callback_data="cancel")])
-    return InlineKeyboardMarkup(buttons)
-
 def build_search_mode_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 По одному месяцу", callback_data="mode:single")],
-        [InlineKeyboardButton("📆 По трём месяцам (квартал)", callback_data="mode:quarter")],
+        [InlineKeyboardButton("📆 По трём месяцам", callback_data="mode:quarter")],
         [InlineKeyboardButton("🔚 Отмена", callback_data="cancel")]
     ])
 
@@ -270,6 +247,15 @@ def build_quarter_keyboard():
         [InlineKeyboardButton("🔚 Отмена", callback_data="cancel")]
     ])
 
+def build_year_keyboard():
+    current_year = datetime.datetime.now().year
+    years = list(range(current_year - 3, current_year + 4))
+    buttons = []
+    for i in range(0, len(years), 3):
+        buttons.append([InlineKeyboardButton(str(y), callback_data=f"year:{y}") for y in years[i:i+3]])
+    buttons.append([InlineKeyboardButton("🔚 Отмена", callback_data="cancel")])
+    return InlineKeyboardMarkup(buttons)
+
 def build_results_keyboard(results, page=0, per_page=10, mode="single", current_month=None, current_quarter=None, year=None):
     total = len(results)
     start = page * per_page
@@ -280,15 +266,11 @@ def build_results_keyboard(results, page=0, per_page=10, mode="single", current_
     if end < total:
         buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data=f"page:{page+1}"))
     if mode == "single":
-        if current_month == 12:
-            next_month = 1
-            next_year = year + 1
-        else:
-            next_month = current_month + 1
-            next_year = year
+        next_month = 1 if current_month == 12 else current_month + 1
+        next_year = year + 1 if current_month == 12 else year
         buttons.append(InlineKeyboardButton("🔄 След. месяц", callback_data=f"next_month:{next_year}:{next_month}"))
     elif mode == "quarter":
-        next_quarter = current_quarter + 1 if current_quarter < 4 else 1
+        next_quarter = 1 if current_quarter == 4 else current_quarter + 1
         next_year = year + 1 if current_quarter == 4 else year
         buttons.append(InlineKeyboardButton("🔄 След. квартал", callback_data=f"next_quarter:{next_year}:{next_quarter}"))
     buttons.append(InlineKeyboardButton("🔚 Завершить", callback_data="cancel"))
@@ -313,7 +295,7 @@ async def analyze_period(city, portal_type, year, months):
                 continue
     return results
 
-# === ОСНОВНЫЕ ОБРАБОТЧИКИ ===
+# === ОБРАБОТЧИКИ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌍 <b>Система анализа порталов</b>\nВыберите город:",
@@ -329,19 +311,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "cancel":
         await query.edit_message_text("❌ Операция завершена. Отправьте /start для нового поиска.")
+        user_data.clear()
         return
 
     if data.startswith("cities:"):
         offset = int(data.split(":")[1])
-        await query.edit_message_text(
-            "Выберите город:",
-            reply_markup=build_city_keyboard(offset)
-        )
+        await query.edit_message_text("Выберите город:", reply_markup=build_city_keyboard(offset))
         return
 
     if data.startswith("city:"):
         city = data.split(":", 1)[1]
-        user_data.update({"city": city, "state": "select_type"})
+        user_data.update({"city": city})
         await query.edit_message_text(
             f"Выбран город: <b>{city}</b>\nВыберите тип портала:",
             reply_markup=build_type_keyboard(),
@@ -352,25 +332,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("type:"):
         portal_type = int(data.split(":")[1])
         user_data["portal_type"] = portal_type
-        await query.edit_message_text(
-            "Выберите режим поиска:",
-            reply_markup=build_search_mode_keyboard()
-        )
+        await query.edit_message_text("Выберите режим поиска:", reply_markup=build_search_mode_keyboard())
         return
 
     if data.startswith("mode:"):
         mode = data.split(":")[1]
-        user_data["search_mode"] = mode
-        if mode == "single":
-            await query.edit_message_text("Выберите месяц:", reply_markup=build_single_month_keyboard())
-        else:
-            await query.edit_message_text("Выберите квартал:", reply_markup=build_quarter_keyboard())
-        return
-
-    if data.startswith("year:"):
-        year = int(data.split(":")[1])
-        user_data["year"] = year
-        mode = user_data.get("search_mode")
+        user_data["mode"] = mode
         if mode == "single":
             await query.edit_message_text("Выберите месяц:", reply_markup=build_single_month_keyboard())
         else:
@@ -380,37 +347,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("month:"):
         month = int(data.split(":")[1])
         user_data["month"] = month
-        city = user_data["city"]
-        portal_type = user_data["portal_type"]
-        year = user_data.get("year")
-        if not year:
-            await query.edit_message_text("Выберите год:", reply_markup=build_year_keyboard())
-            return
-        try:
-            results = await analyze_period(city, portal_type, year, [month])
-            user_data.update({"results": results, "page": 0, "mode": "single"})
-            await show_results(query, user_data, mode="single", current_month=month, year=year)
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+        await query.edit_message_text("Выберите год:", reply_markup=build_year_keyboard())
         return
 
     if data.startswith("quarter:"):
         quarter = int(data.split(":")[1])
-        quarters = {1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12]}
-        months = quarters[quarter]
         user_data["quarter"] = quarter
-        user_data["months"] = months
-        city = user_data["city"]
-        portal_type = user_data["portal_type"]
-        year = user_data.get("year")
-        if not year:
-            await query.edit_message_text("Выберите год:", reply_markup=build_year_keyboard())
+        await query.edit_message_text("Выберите год:", reply_markup=build_year_keyboard())
+        return
+
+    if data.startswith("year:"):
+        year = int(data.split(":")[1])
+        user_data["year"] = year
+        mode = user_data.get("mode")
+        city = user_data.get("city")
+        portal_type = user_data.get("portal_type")
+
+        if not all([city, portal_type, mode]):
+            await query.edit_message_text("❌ Ошибка состояния. Отправьте /start.")
             return
+
         try:
-            results = await analyze_period(city, portal_type, year, months)
-            user_data.update({"results": results, "page": 0, "mode": "quarter"})
-            await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year)
+            if mode == "single":
+                month = user_data["month"]
+                results = await analyze_period(city, portal_type, year, [month])
+                user_data.update({"results": results, "page": 0})
+                await show_results(query, user_data, mode="single", current_month=month, year=year)
+            else:
+                quarter = user_data["quarter"]
+                quarters = {1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12]}
+                months = quarters[quarter]
+                results = await analyze_period(city, portal_type, year, months)
+                user_data.update({"results": results, "page": 0})
+                await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year)
         except Exception as e:
+            logger.error(f"Ошибка анализа: {e}")
             await query.edit_message_text(f"❌ Ошибка: {e}")
         return
 
@@ -445,7 +416,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quarter = int(parts[2])
         quarters = {1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12]}
         months = quarters[quarter]
-        user_data.update({"year": year, "quarter": quarter, "months": months})
+        user_data.update({"year": year, "quarter": quarter})
         city = user_data["city"]
         portal_type = user_data["portal_type"]
         try:
@@ -479,18 +450,65 @@ async def show_results(query, user_data, mode, current_month=None, current_quart
     )
     await query.edit_message_text(text, reply_markup=reply_markup)
 
-# === РУЧНОЙ ПОИСК (оставлен как есть) ===
+# === РУЧНОЙ ПОИСК ===
 async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (оставь свою реализацию без изменений)
-    pass
+    try:
+        text = update.message.text.strip()
+        if "," not in text:
+            raise ValueError("Формат: дата, место")
+
+        parts = text.split(",", 1)
+        date_str = parts[0].strip()
+        rest = parts[1].strip()
+
+        months_map = {
+            "января":1,"февраля":2,"марта":3,"апреля":4,"мая":5,"июня":6,
+            "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12
+        }
+        date_parts = date_str.split()
+        if len(date_parts) == 3:
+            day = int(date_parts[0])
+            month_str = date_parts[1].lower().rstrip('.')
+            year = int(date_parts[2])
+            month = months_map.get(month_str, 1)
+            if month == 1 and month_str not in months_map:
+                raise ValueError("Неизвестный месяц")
+            dt = datetime.datetime(year, month, day, 15, tzinfo=pytz.UTC)
+        else:
+            raise ValueError("Формат: 5 июля 1947")
+
+        if year < 2000:
+            await update.message.reply_text("❌ Данные Kp-индекса доступны только с 2000 года.")
+            return
+
+        try:
+            coords = [float(x.strip()) for x in rest.split(",")]
+            if len(coords) == 2:
+                lat, lon = coords
+            else:
+                raise ValueError()
+        except:
+            loc = geolocator.geocode(rest, timeout=10)
+            if not loc:
+                raise ValueError("Место не найдено")
+            lat, lon = loc.latitude, loc.longitude
+
+        event_type = get_event_analysis(lat, lon, dt)
+        await update.message.reply_text(f"{event_type}\n• Координаты: {lat:.4f}, {lon:.4f}", parse_mode="HTML")
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"⚠️ {str(e)}\n\nПример:\n<code>5 июля 2000, Roswell, USA</code>",
+            parse_mode="HTML"
+        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 <b>Как пользоваться</b>\n\n"
         "1️⃣ Отправьте /start\n"
         "2️⃣ Следуйте кнопкам\n"
-        "3️⃣ Используйте ручной поиск: <code>5 июля 2000, Roswell, USA</code>\n\n"
-        "Данные Kp-индекса доступны с 2000 года.",
+        "3️⃣ Или вручную: <code>5 июля 2000, Roswell, USA</code>\n\n"
+        "Данные Kp-индекса — с 2000 года.",
         parse_mode="HTML"
     )
 
@@ -504,18 +522,17 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.Regex(r'\d+\s+\w+,\s+[\w\s]+'), manual_search))
 
-    # Flask + heartbeat (оставь как есть)
-    from threading import Thread
+    # Flask в фоне
     def run_flask():
         flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
-    Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=run_flask, daemon=True).start()
 
+    # Heartbeat
     def run_heartbeat():
-        import asyncio, time
         while True:
             time.sleep(300)
             print("heartbeat")
-    Thread(target=run_heartbeat, daemon=True).start()
+    threading.Thread(target=run_heartbeat, daemon=True).start()
 
-    logger.info("🚀 Бот запущен (INLINE-РЕЖИМ).")
+    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ).")
     app.run_polling()

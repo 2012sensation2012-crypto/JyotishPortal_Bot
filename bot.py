@@ -1,9 +1,14 @@
+# bot.py
+# JyotishPortal Bot — v2.1: без часиков, только bot.log, город в заголовке, исправленные баги
+# Автор: брат 🛸
+
 import os
 import datetime
 import pytz
 import logging
 import sys
 import requests
+import asyncio  # 🔥 Перенесён вверх
 from astral import LocationInfo
 from astral.sun import sun
 from geopy.geocoders import Nominatim
@@ -23,7 +28,6 @@ from collections import defaultdict
 from flask import Flask, jsonify
 import threading
 import time
-import asyncio  # 👈 Добавлен для sleep в show_results
 
 # === ЛОГИРОВАНИЕ ТОЛЬКО В bot.log ===
 logging.basicConfig(
@@ -100,7 +104,7 @@ def get_kp_index(date):
         if date.year < 2000:
             return 2.0
         date_str = date.strftime("%Y%m%d")
-        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"  # 🔥 Без пробела!
+        url = f"https://xras.ru/txt/kp_BPE3_{date_str}.json"  # 🔥 УБРАН ПРОБЕЛ!
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
             return 2.0
@@ -142,6 +146,32 @@ def is_night(lat, lon, dt):
         return local_dt < sunrise or local_dt > sunset
     except:
         return True
+
+# ⚠️ Убедись, что у тебя есть функция calculate_astrology!
+# Пример заглушки (заменить на свою):
+def calculate_astrology(lat, lon, dt):
+    # Это заглушка! Замени на реальную логику из твоего модуля jyotish
+    jd = swe.julday(dt.year, dt.month, dt.day, dt.hour + dt.minute/60.0)
+    swe.set_topo(lon, lat, 0)
+    moon = swe.calc_ut(jd, swe.MOON)[0][0]
+    sun = swe.calc_ut(jd, swe.SUN)[0][0]
+    rahu = swe.calc_ut(jd, swe.MEAN_NODE)[0][0] + 180  # Раху = противоположность Сев. узла
+    rahu %= 360
+
+    # Простая накшатра (для примера)
+    nakshatras = ["Ашвини", "Бхарани", "Криттика", "Рохини", "Мригашира", "Ардра", "Пунарвасу",
+                  "Пушья", "Ашлеша", "Магха", "Пурва Пхалгуни", "Уттара Пхалгуни", "Хаста",
+                  "Читра", "Свати", "Вишакха", "Анурадха", "Джештха", "Мула", "Пурва Ашадха",
+                  "Уттара Ашадха", "Шравана", "Дхаништха", "Шатабхиша", "Пурва Бхадрапада",
+                  "Уттара Бхадрапада", "Ревати"]
+    nakshatra = nakshatras[int(moon / (360/27)) % 27]
+
+    return {
+        "moon": moon % 360,
+        "sun": sun % 360,
+        "rahu": rahu,
+        "nakshatra": nakshatra
+    }
 
 @lru_cache(maxsize=365)
 def get_event_analysis(lat, lon, dt):
@@ -276,7 +306,8 @@ async def analyze_period(city, portal_type, year, months):
                    (portal_type == 2 and "Тип 2" in event_type) or \
                    (portal_type == 4 and "Тип 4" in event_type):
                     results.append(f"{day:02d}.{month:02d}.{year} — {event_type}")
-            except:
+            except Exception as e:
+                logger.warning(f"Ошибка при анализе {day}.{month}.{year}: {e}")
                 continue
     return results
 
@@ -290,6 +321,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    # 🔥 Подтверждаем запрос БЕЗ уведомления → нет часиков, но нет и "Query is too old"
+    await query.answer(text="")  # ← именно так
+
     data = query.data
     user_data = context.user_data
 
@@ -423,7 +457,6 @@ async def show_results(query, user_data, mode, current_month=None, current_quart
     end = start + per_page
     chunk = results[start:end]
 
-    # 🔥 Подпись города в заголовке — теперь всегда есть
     if results:
         text = f"📍 Результаты для <b>{city}</b> ({start+1}–{min(end, len(results))} из {len(results)}):\n\n" + "\n".join(chunk)
     else:
@@ -438,10 +471,8 @@ async def show_results(query, user_data, mode, current_month=None, current_quart
         current_month=current_month, current_quarter=current_quarter, year=year, city=city
     )
 
-    # 🔥 Защита от "Message is not modified"
     try:
-        if query.message.text != text or query.message.reply_markup != reply_markup:
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка редактирования сообщения: {e}")
 
@@ -529,5 +560,5 @@ if __name__ == "__main__":
             print("heartbeat")
     threading.Thread(target=run_heartbeat, daemon=True).start()
 
-    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ + БЕЗ ЧАСИКОВ + ПОДПИСЬ ГОРОДА + ЛОГИ В bot.log).")
+    logger.info("🚀 JyotishPortal Bot запущен (БЕЗ ЧАСИКОВ + ТОЛЬКО bot.log + ГОРОД В ЗАГОЛОВКЕ).")
     app.run_polling()

@@ -259,7 +259,7 @@ def build_results_keyboard(results, page=0, per_page=10, mode="single", current_
         next_year = year + 1 if current_quarter == 4 else year
         buttons.append(InlineKeyboardButton("🔄 След. квартал", callback_data=f"next_quarter:{next_year}:{next_quarter}"))
     buttons.append(InlineKeyboardButton("🔚 Завершить", callback_data="cancel"))
-    return InlineKeyboardMarkup([buttons] if buttons else [[InlineKeyboardButton("🔚 Завершить", callback_data="cancel")])
+    return InlineKeyboardMarkup([buttons] if buttons else [[InlineKeyboardButton("🔚 Завершить", callback_data="cancel")]])
 
 async def analyze_period(city, portal_type, year, months):
     coords = CITY_COORDS.get(city)

@@ -1,5 +1,5 @@
 # bot.py
-# JyotishPortal Bot — полная версия с inline-интерфейсом и логированием в bot.log
+# JyotishPortal Bot — v2.0: часики, очистка, подпись города, логи
 # Автор: брат 🛸
 
 import os
@@ -27,17 +27,6 @@ from collections import defaultdict
 from flask import Flask, jsonify
 import threading
 import time
-
-# === ИМПОРТ JYOTISH (предполагается, что пакет установлен) ===
-try:
-    from jyotish import calculate_astrology
-except ImportError:
-    def calculate_astrology(lat, lon, dt):
-        # Заглушка для тестирования
-        return {
-            "moon": 0, "rahu": 0, "nakshatra": "Ашвини", "moon_house": 1,
-            "houses": [], "sun": 0, "moon_sign": "Овен"
-        }
 
 # === ЛОГИРОВАНИЕ В bot.log ===
 logging.basicConfig(
@@ -256,7 +245,7 @@ def build_year_keyboard():
     buttons.append([InlineKeyboardButton("🔚 Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(buttons)
 
-def build_results_keyboard(results, page=0, per_page=10, mode="single", current_month=None, current_quarter=None, year=None):
+def build_results_keyboard(results, page=0, per_page=10, mode="single", current_month=None, current_quarter=None, year=None, city=None):
     total = len(results)
     start = page * per_page
     end = min(start + per_page, total)
@@ -274,7 +263,7 @@ def build_results_keyboard(results, page=0, per_page=10, mode="single", current_
         next_year = year + 1 if current_quarter == 4 else year
         buttons.append(InlineKeyboardButton("🔄 След. квартал", callback_data=f"next_quarter:{next_year}:{next_quarter}"))
     buttons.append(InlineKeyboardButton("🔚 Завершить", callback_data="cancel"))
-    return InlineKeyboardMarkup([buttons] if buttons else [[InlineKeyboardButton("🔚 Завершить", callback_data="cancel")]])
+    return InlineKeyboardMarkup([buttons] if buttons else [[InlineKeyboardButton("🔚 Завершить", callback_data="cancel")])
 
 async def analyze_period(city, portal_type, year, months):
     coords = CITY_COORDS.get(city)
@@ -305,12 +294,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    # ⏳ Показываем "часики" сразу
+    await query.answer()  # ← вот это вызывает "загрузку"
+
     data = query.data
     user_data = context.user_data
 
     if data == "cancel":
-        await query.edit_message_text("❌ Операция завершена. Отправьте /start для нового поиска.")
+        # ❌ Убираем "Операция завершена" — просто редактируем сообщение
+        await query.edit_message_text(
+            "🔚 Операция завершена.\nОтправьте /start для нового поиска.",
+            reply_markup=None  # убираем клавиатуру
+        )
         user_data.clear()
         return
 
@@ -323,7 +318,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = data.split(":", 1)[1]
         user_data.update({"city": city})
         await query.edit_message_text(
-            f"Выбран город: <b>{city}</b>\nВыберите тип портала:",
+            f"📍 Выбран город: <b>{city}</b>\nВыберите тип портала:",
             reply_markup=build_type_keyboard(),
             parse_mode="HTML"
         )
@@ -368,18 +363,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
+            # 🕒 Добавляем задержку, чтобы "часики" были заметны
+            await asyncio.sleep(0.3)
+
             if mode == "single":
                 month = user_data["month"]
                 results = await analyze_period(city, portal_type, year, [month])
                 user_data.update({"results": results, "page": 0})
-                await show_results(query, user_data, mode="single", current_month=month, year=year)
+                await show_results(query, user_data, mode="single", current_month=month, year=year, city=city)
             else:
                 quarter = user_data["quarter"]
                 quarters = {1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12]}
                 months = quarters[quarter]
                 results = await analyze_period(city, portal_type, year, months)
                 user_data.update({"results": results, "page": 0})
-                await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year)
+                await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year, city=city)
         except Exception as e:
             logger.error(f"Ошибка анализа: {e}")
             await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -392,7 +390,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_month = user_data.get("month")
         current_quarter = user_data.get("quarter")
         year = user_data.get("year")
-        await show_results(query, user_data, mode=mode, current_month=current_month, current_quarter=current_quarter, year=year)
+        city = user_data.get("city")
+        await show_results(query, user_data, mode=mode, current_month=current_month, current_quarter=current_quarter, year=year, city=city)
         return
 
     if data.startswith("next_month:"):
@@ -403,9 +402,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = user_data["city"]
         portal_type = user_data["portal_type"]
         try:
+            # 🕒 Задержка для "часиков"
+            await asyncio.sleep(0.3)
             results = await analyze_period(city, portal_type, year, [month])
             user_data.update({"results": results, "page": 0, "mode": "single"})
-            await show_results(query, user_data, mode="single", current_month=month, year=year)
+            await show_results(query, user_data, mode="single", current_month=month, year=year, city=city)
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка: {e}")
         return
@@ -420,14 +421,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = user_data["city"]
         portal_type = user_data["portal_type"]
         try:
+            # 🕒 Задержка для "часиков"
+            await asyncio.sleep(0.3)
             results = await analyze_period(city, portal_type, year, months)
             user_data.update({"results": results, "page": 0, "mode": "quarter"})
-            await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year)
+            await show_results(query, user_data, mode="quarter", current_quarter=quarter, year=year, city=city)
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка: {e}")
         return
 
-async def show_results(query, user_data, mode, current_month=None, current_quarter=None, year=None):
+async def show_results(query, user_data, mode, current_month=None, current_quarter=None, year=None, city=None):
     results = user_data.get("results", [])
     page = user_data.get("page", 0)
     per_page = 10
@@ -435,20 +438,27 @@ async def show_results(query, user_data, mode, current_month=None, current_quart
     end = start + per_page
     chunk = results[start:end]
 
+    # 🔥 Подпись города в заголовке
     if results:
-        text = f"📅 Результаты ({start+1}–{min(end, len(results))} из {len(results)}):\n\n" + "\n".join(chunk)
+        text = f"📍 Результаты для <b>{city}</b> ({start+1}–{min(end, len(results))} из {len(results)}):\n\n" + "\n".join(chunk)
     else:
         if mode == "single":
-            text = f"❌ Порталы не найдены в {current_month}.{year}."
+            text = f"❌ Порталы не найдены в {current_month}.{year} для <b>{city}</b>."
         else:
             q_names = {1: "Янв–Мар", 2: "Апр–Июн", 3: "Июл–Сен", 4: "Окт–Дек"}
-            text = f"❌ Порталы не найдены в {q_names.get(current_quarter, 'квартале')} {year}."
+            text = f"❌ Порталы не найдены в {q_names.get(current_quarter, 'квартале')} {year} для <b>{city}</b>."
 
     reply_markup = build_results_keyboard(
         results, page=page, mode=mode,
-        current_month=current_month, current_quarter=current_quarter, year=year
+        current_month=current_month, current_quarter=current_quarter, year=year, city=city
     )
-    await query.edit_message_text(text, reply_markup=reply_markup)
+
+    # 🔥 Защита от "Message is not modified"
+    try:
+        if query.message.text != text or query.message.reply_markup != reply_markup:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
 
 # === РУЧНОЙ ПОИСК ===
 async def manual_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -514,6 +524,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ЗАПУСК ===
 if __name__ == "__main__":
+    import asyncio
     TOKEN = os.environ["TELEGRAM_TOKEN"]
     app = Application.builder().token(TOKEN).build()
 
@@ -534,5 +545,5 @@ if __name__ == "__main__":
             print("heartbeat")
     threading.Thread(target=run_heartbeat, daemon=True).start()
 
-    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ).")
+    logger.info("🚀 JyotishPortal Bot запущен (INLINE-РЕЖИМ + ЧАСИКИ + ОЧИСТКА + ПОДПИСЬ ГОРОДА).")
     app.run_polling()
